@@ -1,23 +1,39 @@
-﻿using System;
+﻿using Microsoft.Extensions.Logging;
+using N2.Http.Authorization;
+using N2.Http.Extensions;
+using Newtonsoft.Json;
+using System;
+using System.Linq;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using N2.Http.Authorization;
-using N2.Http.Extensions;
 
 namespace N2.Http
 {
+
+
     public class NamedHttpClient : IHttpClient
     {
         public string Name { get; private set; }
         public string BaseUrl { get; private set; }
         public HttpClient Client { get; }
         private ILogger<NamedHttpClient> _logger;
+        private bool _authorizationModified = false;
+
+        private static readonly string[] ScanHeaders = new string[]
+        {
+            WellKnownHeaders.ETag,
+            WellKnownHeaders.ContentRef,
+            WellKnownHeaders.FirstPage,
+            WellKnownHeaders.LastPage,
+            WellKnownHeaders.NextPage,
+            WellKnownHeaders.PrevPage,
+        };
 
         public NamedHttpClient(ILogger<NamedHttpClient> logger, string name, HttpClient httpClient, string baseUrl)
         {
@@ -34,32 +50,33 @@ namespace N2.Http
             set
             {
                 _authorizationType = value;
-                UpdateAuthorization();
+                _authorizationModified = true;
             }
         }
         private AuthorizationType _authorizationType;
 
-        public string BearerToken
+        public BearerToken BearerToken
         {
             get { return _bearerToken; }
             set
             {
                 _bearerToken = value;
-                UpdateAuthorization();
+                _authorizationModified = true;
             }
         }
-        private string _bearerToken;
+        private BearerToken _bearerToken;
 
-        public BasicAuthorization BasicAuthorization 
+        public BasicAuthorization BasicAuthorization
         {
             get { return _basicAuthorization; }
             set
             {
                 _basicAuthorization = value;
-                UpdateAuthorization();
+                _authorizationModified = true;
             }
         }
         private BasicAuthorization _basicAuthorization;
+
 
         public void SetBaseUrl(string baseUrl)
         {
@@ -72,8 +89,9 @@ namespace N2.Http
             Client.CancelPendingRequests();
         }
 
-        private void UpdateAuthorization()
+        public async Task<bool> UpdateAuthorization()
         {
+            if (!_authorizationModified) return false;
             const string AuthorizationHeader = "Authorization";
             if (Client.DefaultRequestHeaders.Contains(AuthorizationHeader))
             {
@@ -82,63 +100,77 @@ namespace N2.Http
 
             switch (_authorizationType)
             {
-                default:                    
-                    break;
+                default:
+                    _authorizationModified = false;
+                    return false;
                 case AuthorizationType.Bearer:
-                    if (!string.IsNullOrEmpty(_bearerToken))
+                    if (_bearerToken != null )
                     {
-                        Client.DefaultRequestHeaders.Add(AuthorizationHeader, $"Bearer {_bearerToken}");
+                        var tokenValue = await _bearerToken.Token();
+                        Client.DefaultRequestHeaders.Add(AuthorizationHeader, $"Bearer {tokenValue}");
                     }
-                    break;
+                    _authorizationModified = false;
+                    return true;
                 case AuthorizationType.Basic:
                     if (_basicAuthorization != null)
                     {
                         Client.DefaultRequestHeaders.Add(AuthorizationHeader, $"Basic {_basicAuthorization.Token}");
                     }
-                    break;
+                    _authorizationModified = false;
+                    return true;
             }
         }
 
         #region Get
         public async Task<TR> Get<TR>()
         {
-            return await GetRequest<TR>(BaseUrl, null, default(CancellationToken));
+            var (result, status, headers) = await GetRequest<TR>(BaseUrl, null, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Get<TR>(CancellationToken cancellation)
         {
-            return await GetRequest<TR>(BaseUrl, null, cancellation);
+            var (result, status, headers) = await GetRequest<TR>(BaseUrl, null, cancellation);
+            return result;
         }
 
         public async Task<TR> Get<TR>(string path)
         {
-            return await GetRequest<TR>(GetFullPath(path), null, default(CancellationToken));
+            var (result, status, headers) = await GetRequest<TR>(GetFullPath(path), null, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Get<TR>(string path, CancellationToken cancellation)
         {
-            return await GetRequest<TR>(GetFullPath(path), null, cancellation);
+            var (result, status, headers) = await GetRequest<TR>(GetFullPath(path), null, cancellation);
+            return result;
         }
 
         public async Task<TR> Get<TR>(Dictionary<string, object> queryParameters)
         {
-            return await GetRequest<TR>(BaseUrl, queryParameters, default(CancellationToken));
+            var (result, status, headers) = await GetRequest<TR>(BaseUrl, queryParameters, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Get<TR>(Dictionary<string, object> queryParameters, CancellationToken cancellation)
         {
-            return await GetRequest<TR>(BaseUrl, queryParameters, cancellation);
+            var (result, status, headers) = await GetRequest<TR>(BaseUrl, queryParameters, cancellation);
+            return result;
         }
 
         public async Task<TR> Get<TR>(string path, Dictionary<string, object> queryParameters)
         {
-            return await GetRequest<TR>(GetFullPath(path), queryParameters, default(CancellationToken));
+            var (result, status, headers) = await GetRequest<TR>(GetFullPath(path), queryParameters, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Get<TR>(string path, Dictionary<string, object> queryParameters, CancellationToken cancellation)
         {
-            return await GetRequest<TR>(GetFullPath(path), queryParameters, cancellation);
+            var (result, status, headers) = await GetRequest<TR>(GetFullPath(path), queryParameters, cancellation);
+            return result;
         }
 
-        private async Task<TR> GetRequest<TR>(string fullPath, Dictionary<string, object> queryParameters, CancellationToken cancellation)
+        private async Task<(TR, HttpStatusCode, Dictionary<string, string>)> GetRequest<TR>(string fullPath, Dictionary<string, object> queryParameters, CancellationToken cancellation)
         {
-            using (var logContext = _logger.BeginScope("GetRequest"))
+            cancellation.ThrowIfCancellationRequested();
+            await UpdateAuthorization();
+            using (var logContext = _logger.BeginScope("ReadDataRequest"))
             {
                 _logger.Log(LogLevel.Information, $"Request: GET");
                 if (queryParameters != null && queryParameters.Count > 0)
@@ -164,30 +196,155 @@ namespace N2.Http
         #region Post
         public async Task<TR> Post<TQ, TR>(TQ request)
         {
-            return await PostRequest<TQ, TR>(BaseUrl, request, default(CancellationToken));
+            var (result, status, headers) = await PostRequest<TQ, TR>(BaseUrl, request, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Post<TQ, TR>(TQ request, CancellationToken cancellation)
         {
-            return await PostRequest<TQ, TR>(BaseUrl, request, cancellation);
+            var (result, status, headers) = await PostRequest<TQ, TR>(BaseUrl, request, cancellation);
+            return result;
         }
 
         public async Task<TR> Post<TQ, TR>(TQ request, string path)
         {
-            return await PostRequest<TQ, TR>(GetFullPath(path), request, default(CancellationToken));
+            var (result, status, headers) = await PostRequest<TQ, TR>(GetFullPath(path), request, default(CancellationToken));
+            return result;
         }
         public async Task<TR> Post<TQ, TR>(TQ request, string path, CancellationToken cancellation)
         {
-            return await PostRequest<TQ, TR>(GetFullPath(path), request, cancellation);
+            var (result, status, headers) = await PostRequest<TQ, TR>(GetFullPath(path), request, cancellation);
+            return result;
         }
 
-        private async Task<TR> PostRequest<TQ, TR>(string fullPath, TQ request, CancellationToken cancellation)
+        public async Task<(TQ, HttpStatusCode, Dictionary<string, string>)> RestPost<TQ>(TQ request, string path)
         {
-            using (var logContext = _logger.BeginScope("PostRequest"))
+            var (result, status, headers) = await PostRequest<TQ, BaseResult<TQ>>(GetFullPath(path), request, default(CancellationToken));
+            return (result.Item, status, headers);
+        }
+
+        private async Task<(TR, HttpStatusCode, Dictionary<string, string>)> PostRequest<TQ, TR>(string fullPath, TQ request, CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            await UpdateAuthorization();
+            using (var logContext = _logger.BeginScope("CreateDataRequest"))
             {
                 _logger.Log(LogLevel.Information, $"Request: POST {typeof(TQ)} at {fullPath}");
                 var content = new StringContent(JsonConvert.SerializeObject(request), Encoding.UTF8, "application/json");
                 var responseMessage = await Client.PostAsync(fullPath, content, cancellation);
                 return await CreateResponse<TR>(fullPath, responseMessage);
+            }
+        }
+
+        #endregion
+
+        #region Update
+        public async Task<TR> Put<TQ, TR>(TQ request)
+        {
+            var (result, status, headers) = await PutRequest<TQ, TR>(BaseUrl, request, default(CancellationToken));
+            return result;
+        }
+        public async Task<TR> Put<TQ, TR>(TQ request, CancellationToken cancellation)
+        {
+            var (result, status, headers) = await PutRequest<TQ, TR>(BaseUrl, request, cancellation);
+            return result;
+        }
+
+        public async Task<TR> Put<TQ, TR>(TQ request, string path)
+        {
+            var (result, status, headers) = await PutRequest<TQ, TR>(GetFullPath(path), request, default(CancellationToken));
+            return result;
+        }
+        public async Task<TR> Put<TQ, TR>(TQ request, string path, CancellationToken cancellation)
+        {
+            var (result, status, headers) = await PutRequest<TQ, TR>(GetFullPath(path), request, cancellation);
+            return result;
+        }
+
+
+        private async Task<(TR, HttpStatusCode, Dictionary<string, string>)> PutRequest<TQ, TR>(string fullPath, TQ request, CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            await UpdateAuthorization();
+            using (var logContext = _logger.BeginScope("UpdateDataRequest"))
+            {
+                _logger.Log(LogLevel.Information, $"Request: PUT {typeof(TQ)} at {fullPath}");
+                var content = new StringContent(JsonConvert.SerializeObject(request), Encoding.UTF8, "application/json");
+                var responseMessage = await Client.PutAsync(fullPath, content, cancellation);
+                return await CreateResponse<TR>(fullPath, responseMessage);
+            }
+        }
+        #endregion
+
+        #region Delete
+        public async Task<ResponseCode> Delete()
+        {
+            return await DeleteRequest(BaseUrl, null, default(CancellationToken));
+        }
+        public async Task<ResponseCode> Delete(CancellationToken cancellation)
+        {
+            return await DeleteRequest(BaseUrl, null, cancellation);
+        }
+
+        public async Task<ResponseCode> Delete(string path)
+        {
+            return await DeleteRequest(GetFullPath(path), null, default(CancellationToken));
+        }
+        public async Task<ResponseCode> Delete(string path, CancellationToken cancellation)
+        {
+            return await DeleteRequest(GetFullPath(path), null, cancellation);
+        }
+
+        public async Task<ResponseCode> Delete(Dictionary<string, object> queryParameters)
+        {
+            return await DeleteRequest(BaseUrl, queryParameters, default(CancellationToken));
+        }
+        public async Task<ResponseCode> Delete(Dictionary<string, object> queryParameters, CancellationToken cancellation)
+        {
+            return await DeleteRequest(BaseUrl, queryParameters, cancellation);
+        }
+
+        public async Task<ResponseCode> Delete(string path, Dictionary<string, object> queryParameters)
+        {
+            return await DeleteRequest(GetFullPath(path), queryParameters, default(CancellationToken));
+        }
+
+        public async Task<ResponseCode> Delete(string path, Dictionary<string, object> queryParameters, CancellationToken cancellation)
+        {
+            return await DeleteRequest(GetFullPath(path), queryParameters, cancellation);
+        }
+
+        private async Task<ResponseCode> DeleteRequest(string fullPath, Dictionary<string, object> queryParameters, CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            await UpdateAuthorization();
+            using (var logContext = _logger.BeginScope("DeleteDataRequest"))
+            {
+                _logger.Log(LogLevel.Information, $"Request: DELETE");
+                if (queryParameters != null && queryParameters.Count > 0)
+                {
+                    var queryString = queryParameters.AsQueryString();
+                    if (fullPath.Contains('?'))
+                    {
+                        fullPath = fullPath + "&" + queryString;
+                    }
+                    else
+                    {
+                        fullPath = fullPath + "?" + queryString;
+                    }
+                }
+                _logger.Log(LogLevel.Information, $"Path: {fullPath}");
+
+                var responseMessage = await Client.DeleteAsync(fullPath, cancellation);
+                if (responseMessage.IsSuccessStatusCode)
+                {
+                    return ResponseCode.Success;
+                }
+                if (responseMessage.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    throw new AuthenticationException($"Unauthorized endpoint: {fullPath}. Check credentials");
+                }
+                _logger.Log(LogLevel.Warning, $"Request failed [{responseMessage.StatusCode}]:  {fullPath}");
+                return ResponseCode.Failed;
             }
         }
 
@@ -209,13 +366,13 @@ namespace N2.Http
             return string.Concat(BaseUrl, path);
         }
 
-        private async Task<TR> CreateResponse<TR>(string fullPath, HttpResponseMessage responseMessage)
+        private async Task<(TR, HttpStatusCode, Dictionary<string, string>)> CreateResponse<TR>(string fullPath, HttpResponseMessage responseMessage)
         {
             if (!responseMessage.IsSuccessStatusCode)
             {
                 if (responseMessage.StatusCode == System.Net.HttpStatusCode.Unauthorized)
                 {
-                    throw new AuthenticationException($"Unauthorized endpiont: {fullPath}. Check credentials");
+                    throw new AuthenticationException($"Unauthorized endpoint: {fullPath}. Check credentials");
                 }
 
                 _logger.Log(LogLevel.Warning, $"Request failed [{responseMessage.StatusCode}]:  {fullPath}");
@@ -238,7 +395,7 @@ namespace N2.Http
                     }
                     catch (Exception)
                     {
-                        return default(TR);
+                        return (default(TR), responseMessage.StatusCode, GetHeaders(responseMessage.Headers));
                     }
                 }
 
@@ -250,7 +407,7 @@ namespace N2.Http
                     // expect BaseResult
                     var serverResponse = JsonConvert.DeserializeObject<BaseResult>(response);
                     baseResult.Bind(serverResponse);
-                    return (TR)result;
+                    return ((TR)result, responseMessage.StatusCode, GetHeaders(responseMessage.Headers));
                 }
 
                 // bind as string
@@ -259,10 +416,10 @@ namespace N2.Http
                 {
                     var response = await responseMessage.Content.ReadAsStringAsync();
                     stringResult = response;
-                    return (TR)result;
+                    return ((TR)result, responseMessage.StatusCode, GetHeaders(responseMessage.Headers));
                 }
 
-                return (TR)result;
+                return ((TR)result, responseMessage.StatusCode, GetHeaders(responseMessage.Headers));
             }
             else
             {
@@ -277,9 +434,24 @@ namespace N2.Http
                 {
                     result = JsonConvert.DeserializeObject<TR>(response);
                 }
-                return (TR)result;
+
+                return ((TR)result, responseMessage.StatusCode, GetHeaders(responseMessage.Headers));
             }
         }
+
+        private Dictionary<string, string> GetHeaders(HttpResponseHeaders headers)
+        {
+            var result = new Dictionary<string, string>();
+            foreach (var r in ScanHeaders)
+            {
+                if (!headers.Contains(r)) continue;
+                var v = headers.GetValues(r).FirstOrDefault();
+                if (string.IsNullOrEmpty(v)) continue;
+                result.Add(r, v);
+            }
+            return result;
+        }
+
 
         #endregion
     }
