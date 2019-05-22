@@ -65,7 +65,7 @@ namespace XUnitHttpClientTests
             var accessToken = await jwtClient.Post<dynamic, string>(new { Username= "user@mydomain.com", Password = "00000" }, "website/jwt");
 
             testClient.AuthorizationType = AuthorizationType.Bearer;
-            testClient.BearerToken = accessToken;
+            testClient.BearerToken = new BearerToken(async () => { return await Task.FromResult(accessToken); });
             var result = await testClient.Get<Subscription[]>("Products/70");
             Assert.NotNull(result);
             _outputHelper.WriteLine(JsonConvert.SerializeObject(result, Formatting.Indented));

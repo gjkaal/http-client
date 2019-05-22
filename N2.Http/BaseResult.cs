@@ -9,4 +9,8 @@
         public ResponseCode ResponseCode { get; set; }
     }
 
+    public class BaseResult<T>
+    {
+        public T Item { get; set; }
+    }
 }
